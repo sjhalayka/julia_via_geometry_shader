@@ -129,7 +129,7 @@ int main(int argc, char **argv)
 	// Make enough data for 1 point
 	vector<float> point_vertex_data;
 
-	size_t res = 30;
+	size_t res = 50;
 
 	float x_grid_max = 1.5;
 	float y_grid_max = 1.5;
@@ -137,7 +137,7 @@ int main(int argc, char **argv)
 	float x_grid_min = -x_grid_max;
 	float y_grid_min = -y_grid_max;
 	float z_grid_min = -z_grid_max;
-	size_t x_res = res;
+	size_t x_res = res; 
 	size_t y_res = res;
 	size_t z_res = res;
 
@@ -243,9 +243,12 @@ int main(int argc, char **argv)
 
 	vector<size_t> vec_sizes;
 
+	vector<vector<quaternion>> trajectories;
+	vector<quaternion> trajectory;
+
 	size_t curr_size = 0;
 
-	cout << primitives << endl;
+//	cout << primitives << endl;
 
 	for (size_t i = 0; i < primitives; i++)
 	{
@@ -256,24 +259,38 @@ int main(int argc, char **argv)
 			feedback[feedback_index + 2] == 10000 &&
 			feedback[feedback_index + 3] == 10000)
 		{
-			//cout << "found sentinel" << endl;
-			vec_sizes.push_back(curr_size);
-			curr_size = 0;
+			trajectories.push_back(trajectory);
+			trajectory.clear();
 		}
 		else
 		{
-			//cout << feedback[feedback_index + 0] << " " << feedback[feedback_index + 1] << "  " << feedback[feedback_index + 2] << " " << feedback[feedback_index + 3] << endl;
+			quaternion Q(
+				feedback[feedback_index + 0],
+				feedback[feedback_index + 1],
+				feedback[feedback_index + 2],
+				feedback[feedback_index + 3]);
 
-			curr_size++;
+			trajectory.push_back(Q);
 		}
 	}
 
-	cout << vec_sizes.size() << endl;
 
+	size_t in_set = 0;
 
+	for (size_t i = 0; i < trajectories.size(); i++)
+	{
+		if (trajectories[i].size() > 0)
+		{
+			quaternion Q = trajectories[i][trajectories[i].size() - 1];
 
+			if (Q.magnitude() < threshold)
+				in_set++;
+		}
+	}
 
-	return 1;
+	cout << in_set << " of " << trajectories.size() << endl;
+
+	return 0;
 }
 
 
