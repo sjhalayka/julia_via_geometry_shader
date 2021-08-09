@@ -106,10 +106,12 @@ int main(int argc, char **argv)
 
 	glUseProgram(g0_mc_shader.get_program());
 
-	size_t max_vertices = 6;
+	size_t max_output_vertices_per_input = 502;
+
+	size_t max_vertices = max_output_vertices_per_input*num_vertices;
 	size_t num_floats_per_vertex = 4;
 
-	// Allocate enough for the maximum number of triangles
+	// Allocate enough for the maximum number of vertices
 	GLuint tbo;
 	glGenBuffers(1, &tbo);
 	glBindBuffer(GL_ARRAY_BUFFER, tbo);
@@ -143,16 +145,31 @@ int main(int argc, char **argv)
 	glDeleteQueries(1, &query);
 	glDeleteBuffers(1, &tbo);
 
+	vector<size_t> vec_sizes;
+
+	size_t curr_size = 0;
+
+	cout << primitives << endl;
+
 	for (size_t i = 0; i < primitives; i++)
 	{
 		size_t feedback_index = 4 * i;
 
-		cout << feedback[feedback_index + 0] << " ";
-		cout << feedback[feedback_index + 1] << " ";
-		cout << feedback[feedback_index + 2] << " ";
-		cout << feedback[feedback_index + 3] << " ";
-		cout << endl;
+		if (feedback[feedback_index + 0] == 10000 &&
+			feedback[feedback_index + 1] == 10000 &&
+			feedback[feedback_index + 2] == 10000 &&
+			feedback[feedback_index + 3] == 10000)
+		{
+			cout << "found sentinel" << endl;
+			vec_sizes.push_back(curr_size);
+			curr_size = 0;
+		}
+		else
+		{
+			curr_size++;
+		}
 	}
 
+	cout << vec_sizes.size() << endl;
 	return 1;
 }

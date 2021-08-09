@@ -2,7 +2,7 @@
 
 layout (points) in;
 layout (points) out;
-layout (max_vertices = 6) out;
+layout (max_vertices = 502) out;
 
 out vec4 vert;
 
@@ -26,6 +26,12 @@ void main(void)
     EndPrimitive();
     
     vert = vertex2;
+    EmitVertex();
+    EndPrimitive();
+
+    vec4 sentinel = vec4(10000,10000,10000,10000);
+
+    vert = sentinel;
     EmitVertex();
     EndPrimitive();
 }
