@@ -1,7 +1,8 @@
 #include <GL/glew.h>
 #include <GL/glut.h>
 
-
+#include "marching_cubes.h"
+using namespace marching_cubes;
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
@@ -20,65 +21,190 @@ using namespace glm;
 #include <vector>
 using namespace std;
 
+
+
+
 #include "vertex_geometry_shader.h"
 
 
-class quaternion
+
+
+
+
+bool write_triangles_to_binary_stereo_lithography_file(const vector<triangle>& triangles, const char* const file_name)
 {
-public:
-	inline quaternion(void) : x(0.0f), y(0.0f), z(0.0f), w(0.0f) { /*default constructor*/ }
-	inline quaternion(const float src_x, const float src_y, const float src_z, const float src_w) : x(src_x), y(src_y), z(src_z), w(src_w) { /* custom constructor */ }
+	cout << "Triangle count: " << triangles.size() << endl;
 
-	inline float self_dot(void) const
+	if (0 == triangles.size())
+		return false;
+
+	// Write to file.
+	ofstream out(file_name, ios_base::binary);
+
+	if (out.fail())
+		return false;
+
+	const size_t header_size = 80;
+	vector<char> buffer(header_size, 0);
+	const unsigned int num_triangles = static_cast<unsigned int>(triangles.size()); // Must be 4-byte unsigned int.
+	vertex_3 normal;
+
+	// Write blank header.
+	out.write(reinterpret_cast<const char*>(&(buffer[0])), header_size);
+
+	// Write number of triangles.
+	out.write(reinterpret_cast<const char*>(&num_triangles), sizeof(unsigned int));
+
+	// Copy everything to a single buffer.
+	// We do this here because calling ofstream::write() only once PER MESH is going to 
+	// send the data to disk faster than if we were to instead call ofstream::write()
+	// thirteen times PER TRIANGLE.
+	// Of course, the trade-off is that we are using 2x the RAM than what's absolutely required,
+	// but the trade-off is often very much worth it (especially so for meshes with millions of triangles).
+	cout << "Generating normal/vertex/attribute buffer" << endl;
+
+	// Enough bytes for twelve 4-byte floats plus one 2-byte integer, per triangle.
+	const size_t data_size = (12 * sizeof(float) + sizeof(short unsigned int)) * num_triangles;
+	buffer.resize(data_size, 0);
+
+	// Use a pointer to assist with the copying.
+	// Should probably use std::copy() instead, but memcpy() does the trick, so whatever...
+	char* cp = &buffer[0];
+
+	for (vector<triangle>::const_iterator i = triangles.begin(); i != triangles.end(); i++)
 	{
-		return x * x + y * y + z * z + w * w;
+		// Get face normal.
+		vertex_3 v0 = i->vertex[1] - i->vertex[0];
+		vertex_3 v1 = i->vertex[2] - i->vertex[0];
+		normal = v0.cross(v1);
+		normal.normalize();
+
+		memcpy(cp, &normal.x, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &normal.y, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &normal.z, sizeof(float)); cp += sizeof(float);
+
+		memcpy(cp, &i->vertex[0].x, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &i->vertex[0].y, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &i->vertex[0].z, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &i->vertex[1].x, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &i->vertex[1].y, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &i->vertex[1].z, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &i->vertex[2].x, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &i->vertex[2].y, sizeof(float)); cp += sizeof(float);
+		memcpy(cp, &i->vertex[2].z, sizeof(float)); cp += sizeof(float);
+
+		cp += sizeof(short unsigned int);
 	}
 
-	inline float magnitude(void) const
+	cout << "Writing " << data_size / 1048576.0f << " MB of data to binary Stereo Lithography file: " << file_name << endl;
+
+	out.write(reinterpret_cast<const char*>(&buffer[0]), data_size);
+	out.close();
+
+	return true;
+}
+
+
+
+void get_trajectories(
+	const vector<float>& point_vertex_data,
+	vector<vector<quaternion>>& trajectories,
+	vertex_geometry_shader& g0_mc_shader,
+	quaternion C,
+	int max_iterations,
+	float threshold)
+{
+	const GLuint components_per_position = 4;
+	const GLuint components_per_vertex = components_per_position;
+
+	GLuint point_buffer;
+
+	glGenBuffers(1, &point_buffer);
+
+	const GLuint num_vertices = static_cast<GLuint>(point_vertex_data.size()) / components_per_vertex;
+
+	glBindBuffer(GL_ARRAY_BUFFER, point_buffer);
+	glBufferData(GL_ARRAY_BUFFER, point_vertex_data.size() * sizeof(GLfloat), &point_vertex_data[0], GL_DYNAMIC_DRAW);
+
+	glEnableVertexAttribArray(glGetAttribLocation(g0_mc_shader.get_program(), "position"));
+	glVertexAttribPointer(glGetAttribLocation(g0_mc_shader.get_program(), "position"),
+		components_per_position,
+		GL_FLOAT,
+		GL_FALSE,
+		components_per_vertex * sizeof(GLfloat),
+		0);
+
+	glUseProgram(g0_mc_shader.get_program());
+
+	glUniform4f(glGetUniformLocation(g0_mc_shader.get_program(), "C"), C.x, C.y, C.z, C.w);
+	glUniform1i(glGetUniformLocation(g0_mc_shader.get_program(), "max_iterations"), max_iterations);
+	glUniform1f(glGetUniformLocation(g0_mc_shader.get_program(), "threshold"), threshold);
+
+	size_t max_output_vertices_per_input = 502;
+
+	size_t max_vertices = max_output_vertices_per_input * num_vertices;
+	size_t num_floats_per_vertex = 4;
+
+	// Allocate enough for the maximum number of vertices
+	GLuint tbo;
+	glGenBuffers(1, &tbo);
+	glBindBuffer(GL_ARRAY_BUFFER, tbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * max_vertices * num_floats_per_vertex, nullptr, GL_STATIC_READ);
+
+	GLuint query;
+	glGenQueries(1, &query);
+
+	// Perform feedback transform
+	glEnable(GL_RASTERIZER_DISCARD);
+
+	glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo);
+
+	glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query);
+	glBeginTransformFeedback(GL_POINTS);
+	glDrawArrays(GL_POINTS, 0, num_vertices);
+	glEndTransformFeedback();
+	glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+
+	glDisable(GL_RASTERIZER_DISCARD);
+
+	glFlush();
+
+	GLuint primitives;
+	glGetQueryObjectuiv(query, GL_QUERY_RESULT, &primitives);
+
+	// Read back actual number of triangles (in case it's less than two triangles)
+	vector<GLfloat> feedback(primitives * num_floats_per_vertex);
+	glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(GLfloat) * feedback.size(), &feedback[0]);
+
+	glDeleteQueries(1, &query);
+	glDeleteBuffers(1, &tbo);
+
+	vector<quaternion> trajectory;
+
+	for (size_t i = 0; i < primitives; i++)
 	{
-		return sqrtf(self_dot());
+		size_t feedback_index = 4 * i;
+
+		if (feedback[feedback_index + 0] == 10000 &&
+			feedback[feedback_index + 1] == 10000 &&
+			feedback[feedback_index + 2] == 10000 &&
+			feedback[feedback_index + 3] == 10000)
+		{
+			trajectories.push_back(trajectory);
+			trajectory.clear();
+		}
+		else
+		{
+			quaternion Q(
+				feedback[feedback_index + 0],
+				feedback[feedback_index + 1],
+				feedback[feedback_index + 2],
+				feedback[feedback_index + 3]);
+
+			trajectory.push_back(Q);
+		}
 	}
-
-	quaternion operator*(const quaternion& right) const
-	{
-		quaternion ret;
-
-		ret.x = x * right.x - y * right.y - z * right.z - w * right.w;
-		ret.y = x * right.y + y * right.x + z * right.w - w * right.z;
-		ret.z = x * right.z - y * right.w + z * right.x + w * right.y;
-		ret.w = x * right.w + y * right.z - z * right.y + w * right.x;
-
-		return ret;
-	}
-
-	quaternion operator+(const quaternion& right) const
-	{
-		quaternion ret;
-
-		ret.x = x + right.x;
-		ret.y = y + right.y;
-		ret.z = z + right.z;
-		ret.w = w + right.w;
-
-		return ret;
-	}
-
-	quaternion operator-(const quaternion& right) const
-	{
-		quaternion ret;
-
-		ret.x = x - right.x;
-		ret.y = y - right.y;
-		ret.z = z - right.z;
-		ret.w = w - right.w;
-
-		return ret;
-	}
-
-
-	float x, y, z, w;
-};
-
+}
 
 
 int main(int argc, char **argv)
@@ -126,20 +252,15 @@ int main(int argc, char **argv)
 
 	g0_mc_shader.use_program();
 
-	// Make enough data for 1 point
-	vector<float> point_vertex_data;
-
-	size_t res = 50;
-
 	float x_grid_max = 1.5;
 	float y_grid_max = 1.5;
 	float z_grid_max = 1.5;
 	float x_grid_min = -x_grid_max;
 	float y_grid_min = -y_grid_max;
 	float z_grid_min = -z_grid_max;
-	size_t x_res = res; 
-	size_t y_res = res;
-	size_t z_res = res;
+	size_t x_res = 100;
+	size_t y_res = 100;
+	size_t z_res = 100;
 
 	float z_w = 0;
 	quaternion C;
@@ -150,17 +271,72 @@ int main(int argc, char **argv)
 	int max_iterations = 8;
 	float threshold = 4.0f;
 
+
+	// Make enough data for 1 point
+	vector<float> point_vertex_data;
+
 	const float x_step_size = (x_grid_max - x_grid_min) / (x_res - 1);
 	const float y_step_size = (y_grid_max - y_grid_min) / (y_res - 1);
 	const float z_step_size = (z_grid_max - z_grid_min) / (z_res - 1);
 
+	vector<float> xyplane0(x_res * y_res, 0);
+	vector<float> xyplane1(x_res * y_res, 0);
+	vector<triangle> triangles;
+	size_t box_count = 0;
+
+	size_t z = 0;
+
 	quaternion Z(x_grid_min, y_grid_min, z_grid_min, z_w);
 
-	for (size_t z = 0; z < z_res; z++, Z.z += z_step_size)
+	// Calculate 0th xy plane.
+	for (size_t x = 0; x < x_res; x++, Z.x += x_step_size)
 	{
-		cout << "Z slice " << z + 1 << " of " << z_res << endl;
+		Z.y = y_grid_min;
 
+		for (size_t y = 0; y < y_res; y++, Z.y += y_step_size)
+		{
+			point_vertex_data.push_back(Z.x);
+			point_vertex_data.push_back(Z.y);
+			point_vertex_data.push_back(Z.z);
+			point_vertex_data.push_back(Z.w);
+		}
+	}
+
+	// Prepare for 1st xy plane.
+	z++;
+	Z.z += z_step_size;
+
+	vector<vector<quaternion>> local_trajectories;
+
+	vector<vector<quaternion>> all_trajectories;
+
+	get_trajectories(
+		point_vertex_data,
+		local_trajectories,
+		g0_mc_shader,
+		C,
+		max_iterations,
+		threshold);
+
+	for (size_t i = 0; i < local_trajectories.size(); i++)
+	{
+		if (local_trajectories[i].size() > 0)
+			xyplane0[i] = (local_trajectories[i][local_trajectories[i].size() - 1]).magnitude();
+		else
+			xyplane0[i] = 0;
+
+		all_trajectories.push_back(local_trajectories[i]);
+	}
+
+
+
+	// Calculate 1st and subsequent xy planes.
+	for (; z < z_res; z++, Z.z += z_step_size)
+	{
+		point_vertex_data.clear();
 		Z.x = x_grid_min;
+
+		cout << "Calculating triangles from xy-plane pair " << z << " of " << z_res - 1 << endl;
 
 		for (size_t x = 0; x < x_res; x++, Z.x += x_step_size)
 		{
@@ -171,124 +347,67 @@ int main(int argc, char **argv)
 				point_vertex_data.push_back(Z.x);
 				point_vertex_data.push_back(Z.y);
 				point_vertex_data.push_back(Z.z);
-				point_vertex_data.push_back(z_w);
+				point_vertex_data.push_back(Z.w);
 			}
 		}
+
+		local_trajectories.clear();
+
+		get_trajectories(
+			point_vertex_data,
+			local_trajectories,
+			g0_mc_shader,
+			C,
+			max_iterations,
+			threshold);
+
+		for (size_t i = 0; i < local_trajectories.size(); i++)
+		{
+			if (local_trajectories[i].size() > 0)
+				xyplane1[i] = (local_trajectories[i][local_trajectories[i].size() - 1]).magnitude();
+			else
+				xyplane1[i] = 0;
+
+			all_trajectories.push_back(local_trajectories[i]);
+		}
+
+		size_t box_count = 0;
+
+		// Calculate triangles for the xy-planes corresponding to z - 1 and z by marching cubes.
+		tesselate_adjacent_xy_plane_pair(
+			box_count,
+			xyplane0, xyplane1,
+			z - 1,
+			triangles,
+			threshold, // Use threshold as isovalue.
+			x_grid_min, x_grid_max, x_res,
+			y_grid_min, y_grid_max, y_res,
+			z_grid_min, z_grid_max, z_res);
+
+		// Swap memory pointers (fast) instead of performing a memory copy (slow).
+		xyplane1.swap(xyplane0);
 	}
 
-	const GLuint components_per_position = 4;
-	const GLuint components_per_vertex = components_per_position;
+	if (0 < triangles.size())
+		write_triangles_to_binary_stereo_lithography_file(triangles, "out.stl");
 
-	GLuint point_buffer;
 
-	glGenBuffers(1, &point_buffer);
-
-	const GLuint num_vertices = static_cast<GLuint>(point_vertex_data.size()) / components_per_vertex;
-
-	glBindBuffer(GL_ARRAY_BUFFER, point_buffer);
-	glBufferData(GL_ARRAY_BUFFER, point_vertex_data.size() * sizeof(GLfloat), &point_vertex_data[0], GL_DYNAMIC_DRAW);
-
-	glEnableVertexAttribArray(glGetAttribLocation(g0_mc_shader.get_program(), "position"));
-	glVertexAttribPointer(glGetAttribLocation(g0_mc_shader.get_program(), "position"),
-		components_per_position,
-		GL_FLOAT,
-		GL_FALSE,
-		components_per_vertex * sizeof(GLfloat),
-		0);
-
-	glUseProgram(g0_mc_shader.get_program());
-
-	glUniform4f(glGetUniformLocation(g0_mc_shader.get_program(), "C"), C.x, C.y, C.z, C.w);
-	glUniform1i(glGetUniformLocation(g0_mc_shader.get_program(), "max_iterations"), max_iterations);
-	glUniform1f(glGetUniformLocation(g0_mc_shader.get_program(), "threshold"), threshold);
-
-	size_t max_output_vertices_per_input = 502;
-
-	size_t max_vertices = max_output_vertices_per_input*num_vertices;
-	size_t num_floats_per_vertex = 4;
-
-	// Allocate enough for the maximum number of vertices
-	GLuint tbo;
-	glGenBuffers(1, &tbo);
-	glBindBuffer(GL_ARRAY_BUFFER, tbo);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * max_vertices * num_floats_per_vertex, nullptr, GL_STATIC_READ);
-
-	GLuint query;
-	glGenQueries(1, &query);
-
-	// Perform feedback transform
-	glEnable(GL_RASTERIZER_DISCARD);
-
-	glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo);
-
-	glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query);
-	glBeginTransformFeedback(GL_POINTS);
-	glDrawArrays(GL_POINTS, 0, num_vertices);
-	glEndTransformFeedback();
-	glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
-
-	glDisable(GL_RASTERIZER_DISCARD);
-
-	glFlush();
-
-	GLuint primitives;
-	glGetQueryObjectuiv(query, GL_QUERY_RESULT, &primitives);
-
-	// Read back actual number of triangles (in case it's less than two triangles)
-	vector<GLfloat> feedback(primitives * num_floats_per_vertex);
-	glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(GLfloat) * feedback.size(), &feedback[0]);
-
-	glDeleteQueries(1, &query);
-	glDeleteBuffers(1, &tbo);
-
-	vector<size_t> vec_sizes;
-
-	vector<vector<quaternion>> trajectories;
-	vector<quaternion> trajectory;
-
-	size_t curr_size = 0;
-
-//	cout << primitives << endl;
-
-	for (size_t i = 0; i < primitives; i++)
-	{
-		size_t feedback_index = 4 * i;
-
-		if (feedback[feedback_index + 0] == 10000 &&
-			feedback[feedback_index + 1] == 10000 &&
-			feedback[feedback_index + 2] == 10000 &&
-			feedback[feedback_index + 3] == 10000)
-		{
-			trajectories.push_back(trajectory);
-			trajectory.clear();
-		}
-		else
-		{
-			quaternion Q(
-				feedback[feedback_index + 0],
-				feedback[feedback_index + 1],
-				feedback[feedback_index + 2],
-				feedback[feedback_index + 3]);
-
-			trajectory.push_back(Q);
-		}
-	}
 
 
 	size_t in_set = 0;
 
-	for (size_t i = 0; i < trajectories.size(); i++)
+	for (size_t i = 0; i < all_trajectories.size(); i++)
 	{
-		if (trajectories[i].size() > 0)
+		if (all_trajectories[i].size() > 0)
 		{
-			quaternion Q = trajectories[i][trajectories[i].size() - 1];
+			quaternion Q = all_trajectories[i][all_trajectories[i].size() - 1];
 
 			if (Q.magnitude() < threshold)
 				in_set++;
 		}
 	}
 
-	cout << in_set << " of " << trajectories.size() << endl;
+	cout << in_set << " of " << all_trajectories.size() << endl;
 
 	return 0;
 }
