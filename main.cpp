@@ -140,7 +140,7 @@ void get_trajectories(
 	glUniform1i(glGetUniformLocation(g0_mc_shader.get_program(), "max_iterations"), max_iterations);
 	glUniform1f(glGetUniformLocation(g0_mc_shader.get_program(), "threshold"), threshold);
 
-	size_t max_output_vertices_per_input = 502;
+	size_t max_output_vertices_per_input = max_iterations + 2;
 
 	size_t max_vertices = max_output_vertices_per_input * num_vertices;
 	size_t num_floats_per_vertex = 4;
@@ -206,6 +206,124 @@ void get_trajectories(
 	}
 }
 
+void emit_shaders_to_files(const char* const vs_filename, const char* const gs_filename, int max_iterations)
+{
+	ofstream vs_out(vs_filename);
+
+	vs_out << "#version 410 core" << endl;
+
+	vs_out << "// Per-vertex inputs" << endl;
+	vs_out << "layout(location = 0) in vec4 position;" << endl;
+
+	vs_out << "out VS_OUT" << endl;
+	vs_out << "{" << endl;
+	vs_out << "	vec4 position; " << endl;
+	vs_out << "} vs_out;" << endl;
+
+	vs_out << "void main(void)" << endl;
+	vs_out << "{" << endl;
+	vs_out << "	vs_out.position = position; " << endl;
+	vs_out << "}" << endl;
+
+	vs_out.close();
+
+	ofstream gs_out(gs_filename);
+
+	gs_out << "#version 430 core" << endl;
+	gs_out << "" << endl;
+	gs_out << "layout (points) in;" << endl;
+	gs_out << "layout (points) out;" << endl;
+	gs_out << "layout (max_vertices = " << max_iterations + 2 << ") out;" << endl;
+	gs_out << "" << endl;
+	gs_out << "uniform vec4 C;" << endl;
+	gs_out << "uniform int max_iterations;" << endl;
+	gs_out << "uniform float threshold;" << endl;
+	gs_out << "" << endl;
+	gs_out << "out vec4 vert;" << endl;
+	gs_out << "" << endl;
+	gs_out << "in VS_OUT" << endl;
+	gs_out << "{" << endl;
+	gs_out << "    vec4 position;" << endl;
+	gs_out << "} gs_in[];" << endl;
+	gs_out << "" << endl;
+	gs_out << "vec4 inverse_vec4(vec4 in_vec)" << endl;
+	gs_out << "{" << endl;
+	gs_out << "	// inv(a) = conjugate(a) / norm(a)" << endl;
+	gs_out << "" << endl;
+	gs_out << "	float temp_a_norm = in_vec.x*in_vec.x + in_vec.y*in_vec.y + in_vec.z*in_vec.z + in_vec.w*in_vec.w;" << endl;
+	gs_out << "" << endl;
+	gs_out << "    vec4 out_vec;" << endl;
+	gs_out << "" << endl;
+	gs_out << "	out_vec.x =  in_vec.x;" << endl;
+	gs_out << "	out_vec.y = -in_vec.y;" << endl;
+	gs_out << "	out_vec.z = -in_vec.z;" << endl;
+	gs_out << "	out_vec.w = -in_vec.w;" << endl;
+	gs_out << "" << endl;
+	gs_out << "" << endl;
+	gs_out << "	out_vec.x = out_vec.x / temp_a_norm;" << endl;
+	gs_out << "    out_vec.y = out_vec.y / temp_a_norm;" << endl;
+	gs_out << "	out_vec.z = out_vec.z / temp_a_norm;" << endl;
+	gs_out << "	out_vec.w = out_vec.w / temp_a_norm;" << endl;
+	gs_out << "" << endl;
+	gs_out << "    return out_vec;" << endl;
+	gs_out << "}" << endl;
+	gs_out << "" << endl;
+	gs_out << "vec4 pow_vec4(vec4 in_vec, float beta)" << endl;
+	gs_out << "{" << endl;
+	gs_out << "	float fabs_beta = abs(beta);" << endl;
+	gs_out << "" << endl;
+	gs_out << "	float self_dot = in_vec.x * in_vec.x + in_vec.y * in_vec.y + in_vec.z * in_vec.z + in_vec.w * in_vec.w;" << endl;
+	gs_out << "" << endl;
+	gs_out << "	if (self_dot == 0)" << endl;
+	gs_out << "	{" << endl;
+	gs_out << "        return vec4(0, 0, 0, 0);" << endl;
+	gs_out << "	}" << endl;
+	gs_out << "" << endl;
+	gs_out << "	float len = sqrt(self_dot);" << endl;
+	gs_out << "	float self_dot_beta = pow(self_dot, fabs_beta / 2.0f);" << endl;
+	gs_out << "" << endl;
+	gs_out << "	vec4 out_vec;" << endl;
+	gs_out << "" << endl;
+	gs_out << "	out_vec.x = self_dot_beta * cos(fabs_beta * acos(in_vec.x / len));" << endl;
+	gs_out << "	out_vec.y = in_vec.y * self_dot_beta * sin(fabs_beta * acos(in_vec.x / len)) / sqrt(in_vec.y * in_vec.y + in_vec.z * in_vec.z + in_vec.w * in_vec.w);" << endl;
+	gs_out << "	out_vec.z = in_vec.z * self_dot_beta * sin(fabs_beta * acos(in_vec.x / len)) / sqrt(in_vec.y * in_vec.y + in_vec.z * in_vec.z + in_vec.w * in_vec.w);" << endl;
+	gs_out << "	out_vec.w = in_vec.w * self_dot_beta * sin(fabs_beta * acos(in_vec.x / len)) / sqrt(in_vec.y * in_vec.y + in_vec.z * in_vec.z + in_vec.w * in_vec.w);" << endl;
+	gs_out << "" << endl;
+	gs_out << "	if (beta < 0)" << endl;
+	gs_out << "		out_vec = inverse_vec4(out_vec);" << endl;
+	gs_out << "" << endl;
+	gs_out << "	return out_vec;" << endl;
+	gs_out << "}" << endl;
+	gs_out << "" << endl;
+	gs_out << "" << endl;
+	gs_out << "void main(void)" << endl;
+	gs_out << "{" << endl;
+	gs_out << "    vec4 Z = gs_in[0].position;" << endl;
+	gs_out << "		" << endl;
+	gs_out << "    vert = Z;" << endl;
+	gs_out << "    EmitVertex();" << endl;
+	gs_out << "    EndPrimitive();" << endl;
+	gs_out << "" << endl;
+	gs_out << "    for (int i = 0; i < max_iterations; i++)" << endl;
+	gs_out << "    {" << endl;
+	gs_out << "        Z = pow_vec4(Z, 2.0) + C;" << endl;
+	gs_out << "        " << endl;
+	gs_out << "        vert = Z;" << endl;
+	gs_out << "        EmitVertex();" << endl;
+	gs_out << "        EndPrimitive();" << endl;
+	gs_out << "        " << endl;
+	gs_out << "        if (length(Z) >= threshold)" << endl;
+	gs_out << "            break;" << endl;
+	gs_out << "    }" << endl;
+	gs_out << "" << endl;
+	gs_out << "    vec4 sentinel = vec4(10000,10000,10000,10000);" << endl;
+	gs_out << "" << endl;
+	gs_out << "    vert = sentinel;" << endl;
+	gs_out << "    EmitVertex();" << endl;
+	gs_out << "    EndPrimitive();" << endl;
+	gs_out << "}" << endl;
+
+}
 
 int main(int argc, char **argv)
 {
@@ -242,15 +360,6 @@ int main(int argc, char **argv)
 		}
 	}
 
-	vertex_geometry_shader g0_mc_shader;
-
-	if (false == g0_mc_shader.init("points.vs.glsl", "points.gs.glsl", "vert"))
-	{
-		cout << "Couldn't load shaders" << endl;
-		return 0;
-	}
-
-	g0_mc_shader.use_program();
 
 	float x_grid_max = 1.5;
 	float y_grid_max = 1.5;
@@ -270,6 +379,20 @@ int main(int argc, char **argv)
 	C.w = 0.2f;
 	int max_iterations = 8;
 	float threshold = 4.0f;
+
+
+	emit_shaders_to_files("points.vs.glsl", "points.gs.glsl", max_iterations);
+
+	vertex_geometry_shader g0_mc_shader;
+
+	if (false == g0_mc_shader.init("points.vs.glsl", "points.gs.glsl", "vert"))
+	{
+		cout << "Couldn't load shaders" << endl;
+		return 0;
+	}
+
+	g0_mc_shader.use_program();
+
 
 
 	// Make enough data for 1 point
@@ -370,8 +493,6 @@ int main(int argc, char **argv)
 
 			all_trajectories.push_back(local_trajectories[i]);
 		}
-
-		size_t box_count = 0;
 
 		// Calculate triangles for the xy-planes corresponding to z - 1 and z by marching cubes.
 		tesselate_adjacent_xy_plane_pair(
